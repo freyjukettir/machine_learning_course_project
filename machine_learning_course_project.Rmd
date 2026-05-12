@@ -1,0 +1,238 @@
+---
+title: "Machine Learning Course Project"
+author: "CLB"
+date: "2026-05-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warn.conflicts = FALSE)
+```
+
+## Background, project goal, and data source
+
+Using devices such as *Jawbone Up*, *Nike FuelBand*, and *Fitbit* it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify *how much* of a particular activity they do, but they rarely quantify *how well* they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants. They were asked to perform dumbbell lifts correctly and incorrectly in 5 different ways. More information regarding the study is available from the website here: 
+<http://groupware.les.inf.puc-rio.br/har> (see the section on the Weight Lifting Exercise Dataset).
+
+The data used for this project are subsets of the data available at the URL given above:
+
+Training data: <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>
+
+Test data: <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>
+
+The object is to predict the manner in which an exercise was performed: the `classe` of the exercise. "A" was performed correctly, while "B" through "E" were performed with various errors of form. The model developed will be used to predict the `classe` of the exercise in the test set.
+
+## Preliminaries: set up environment, import data, and perform needed transformations.
+
+Several R libraries must be loaded to fulfill the requirements of the project:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(tidyverse, warn.conflicts = FALSE, quietly = TRUE)
+library(caret, warn.conflicts = FALSE, quietly = TRUE)
+library(data.table, warn.conflicts = FALSE, quietly = TRUE)
+library(randomForest, warn.conflicts = FALSE, quietly = TRUE)
+library(rpart, warn.conflicts = FALSE, quietly = TRUE)
+```
+
+We will further assume that the data files are in the same working directory as the R program. Set the working directory and import the data:
+
+```{r echo=TRUE}
+setwd('C:\\etc\\Data_Science_Specialization\\C08_Practical_Machine_Learning')
+ds1 <- fread('pml-training.csv') # Data for training and validation
+ds2 <- fread('pml-testing.csv')  # Data for testing the final model
+```
+
+A bit of exploration is in order, so the `str()` function will be used to identify data dimensions, variable types, etc. The console results of the commands below are omitted due to space constraints, but we find that there are 160 variables, and apparently a large number of NA values. The "training" set (ds1) contains 19,622 observations, and the "testing" set (ds2) contains 20.
+
+```{r echo=TRUE, results='hide'}
+str(ds1)
+str(ds2)
+```
+
+Further, we note a discrepancy between the two data sets: `ds1`, which will be used for training and validation of the model, contains the character variable `classe`. The test data set `ds2` does not contain this column, but does contain the variable `problem_id`. The remainder of the variables are identical. This is consistent with the aim of the exercise, which is to predict the `classe` of the observations in the test data set.
+
+We therefore begin manipulating the data; these operations will be applied to both data sets.\
+
+Remove the unnecessary metadata (columns 1-7):
+
+```{r echo=TRUE}
+ds1 <- ds1[, -c(1:7)]
+ds2 <- ds2[, -c(1:7)]
+```
+
+Remove the variables with near zero variance as they will not contribute materially to the accuracy of the model, and may confound other variables. To ensure equivalent data structure we identify the variables in the larger data set and apply that result to both sets:
+
+```{r echo=TRUE}
+nz_var <- nearZeroVar(ds1)
+ds1 <- ds1 |> select(-all_of(nz_var))
+ds2 <- ds2 |> select(-all_of(nz_var))
+```
+
+Eliminate variables which have 20% or more values missing (NA), to avoid the need for excessive imputation of values:
+
+```{r echo=TRUE}
+na_50 <- sapply(ds1, function(x) mean(is.na(x))) >= 0.20
+ds1 <- subset(ds1, select = na_50==FALSE)
+ds2 <- subset(ds2, select = na_50==FALSE)
+```
+
+Convert integer variables to numeric to avoid type mismatch errors when building and applying models:
+
+```{r echo=TRUE}
+ds1 <- ds1 |> mutate_if(is.integer, as.numeric)
+ds2 <- ds2 |> mutate_if(is.integer, as.numeric)
+```
+
+Convert `classe` in the training/validation data set to a factor to avoid trouble when generating the models:
+
+```{r echo=TRUE}
+ds1$classe <- as.factor(ds1$classe)
+```
+
+To provide for cross-validation of the models, the training data is partitioned into training (70%) and validation (30%) data sets:
+
+```{r echo=TRUE}
+set.seed(8675309)
+ds1_partition <- createDataPartition(y = ds1$classe, p = 0.7, list = FALSE)
+ds1_train <- ds1[ds1_partition, ]
+ds1_val  <- ds1[-ds1_partition, ]
+```
+
+A check of the dimensions of the validation set confirms a 70/30 split:
+
+```{r echo=TRUE}
+paste('ds1_val proportion of ds1:', round(dim(ds1_val)[1]/dim(ds1)[1], 4), sep = ' ')
+```
+
+## Building models
+
+We will consider three models for predicting `classe`:
+
+### Decision tree model
+
+The first model is a decision tree. We generate the model:
+
+```{r echo=TRUE}
+model_dt <- rpart(classe ~ ., data = ds1_train, method = 'class')
+```
+
+Then test against the validation set to get an idea of its accuracy.
+
+```{r echo=TRUE}
+prediction_model_dt <- predict(model_dt, ds1_val, type = 'class')
+cm_dt <- confusionMatrix(prediction_model_dt, ds1_val$classe)
+cm_dt
+```
+
+We see from this result that the expected prediction accuracy of the model is **0.7376**. Out-of-sample error for this model is 26.24%.
+
+### Random Forest model
+
+In this model, we will use cross-validation in the model training parameters to improve our confidence in the result. We generate the model:
+
+```{r echo=TRUE, cache=TRUE}
+ctl_par_rf <- trainControl(method = 'cv', number = 4, verboseIter = FALSE)
+model_rf <- randomForest(classe ~ ., data = ds1_train, method = 'rf', 
+                         trControl = ctl_par_rf)
+```
+
+And again test against the validation set:
+
+```{r echo=TRUE}
+prediction_model_rf <- predict(model_rf, ds1_val, type = 'class')
+cm_rf <- confusionMatrix(prediction_model_rf, ds1_val$classe)
+cm_rf
+```
+
+Note here that the model accuracy has improved significantly, to **0.9952**. The out-of-sample error is, for this model, 0.48%.
+
+### Generalized Boosted Model (GBM)
+
+The third model to be evaluated is a Generalized Boosted Model. Again, we will use cross-validation with the intent of improving accuracy:
+
+```{r echo=TRUE, cache=TRUE}
+ctl_par_gbm <- trainControl(method = 'repeatedcv', number = 6, repeats = 1)
+model_gbm <- train(classe ~ ., data = ds1_train, method = 'gbm',
+                   trControl = ctl_par_gbm, verbose = FALSE)
+```
+
+And check accuracy against the validation set:
+
+```{r echo=TRUE}
+prediction_gbm <- predict(model_gbm, ds1_val)
+cm_gbm <- confusionMatrix(prediction_gbm, ds1_val$classe)
+cm_gbm
+```
+
+Accuracy of 0.9584 is below that obtained from a Random Forest model, with an out-of-sample error of 4.16%.
+
+The models now being completed and confusion matrices generated, a comparison plot is generated:
+
+```{r echo=TRUE}
+par(mfrow = c(1,3))
+plot(cm_dt$table, col = cm_dt$byClass, 
+     main = paste("Decision Tree accuracy =", round(cm_dt$overall['Accuracy'], 4)))
+plot(cm_rf$table, col = cm_rf$byClass, 
+     main = paste("Random Forest accuracy =", round(cm_rf$overall['Accuracy'], 4)))
+plot(cm_gbm$table, col = cm_gbm$byClass, 
+     main = paste("Gen. Boosted accuracy =", round(cm_gbm$overall['Accuracy'], 4)))
+```
+
+*Fig. 1: Comparison plot of model accuracy.*
+
+### Model Selection
+
+In the final selection of the model, these factors were taken into account:
+
+|         Model | Accuracy | Out-of sample error | Sensitivity | Specificity | Speed\* |
+|-----------:|:----------:|:----------:|:----------:|:----------:|:----------:|
+| Decision Tree |  0.7376  |       0.2624        |   0.7160    |   0.9340    |    1    |
+| Random Forest |  0.9952  |       0.0048        |   0.9946    |   0.9988    |    2    |
+|  Gen. Boosted |  0.9584  |       0.0416        |   0.9556    |   0.9896    |    3    |
+
+\*Speed: a simple ranking - here the Decision Tree model was fastest to generate, followed by the Random Forest model, then the Generalized Boosted model. The Generalized Boosted model was also tested with less cross-validation, but only minimal speed gains were realized.
+
+Based upon these criteria, **the Random Forest model is optimal (of those models tested) for this exercise**.
+
+## Prediction results of models against the test data set
+
+The test data set, as discussed above, is similar in structure to the training/validation set. While an estimated accuracy was obtained for each tested model, it is wise to apply each model to to the test data to note any discrepancies in prediction and increase confidence in the choice of model.
+
+```{r echo=TRUE}
+prediction_model_dt_test  <- round(predict(model_dt, newdata = ds2),3)
+prediction_model_dt_test # Decision Tree Model
+prediction_model_rf_test  <- predict(model_rf, newdata = ds2)
+prediction_model_rf_test # Random Forest Model
+prediction_model_gbm_test <- predict(model_gbm, newdata = ds2)
+prediction_model_gbm_test # Generalized Boosted Model"
+```
+
+Tabulating the prediction results above:
+
+| Model | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 |
+|:---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
+| Decision Tree | B | A | B | [D]{style="color:red"} | A | [C]{style="color:red"} | D | [D]{style="color:red"} | A | A | [C]{style="color:red"} | [B]{style="color:red"} | [C]{style="color:red"} | A | E | E | A | B | B | B |
+| [**Random Forest**]{style="color:darkgreen"} | [**B**]{style="color:darkgreen"} | [**A**]{style="color:darkgreen"} | [**B**]{style="color:darkgreen"} | [**A**]{style="color:darkgreen"} | [**A**]{style="color:darkgreen"} | [**E**]{style="color:darkgreen"} | [**D**]{style="color:darkgreen"} | [**B**]{style="color:darkgreen"} | [**A**]{style="color:darkgreen"} | [**A**]{style="color:darkgreen"} | [**B**]{style="color:darkgreen"} | [**C**]{style="color:darkgreen"} | [**B**]{style="color:darkgreen"} | [**A**]{style="color:darkgreen"} | [**E**]{style="color:darkgreen"} | [**E**]{style="color:darkgreen"} | [**A**]{style="color:darkgreen"} | [**B**]{style="color:darkgreen"} | [**B**]{style="color:darkgreen"} | [**B**]{style="color:darkgreen"} |
+| Gen. Boosted | B | A | B | A | A | E | D | B | A | A | B | C | B | A | E | E | A | B | B | B |
+
+We see from this table that the predictions of our selected Random Forest model (shown in green) and the Generalized Boosted models are in agreement, while there is some divergence in the prediction of the Decision Tree model. There are six points of disagreement, indicated in red: a proportion of 0.30. This is consonant with what would be expected from a comparison of the accuracy of the models as applied to the validation set.
+
+------------------------------------------------------------------------
+
+## *Appendix*
+
+### Function to generate individual prediction results for submission
+
+#### Random Forest model
+
+```{r echo=TRUE}
+generate_submission_files = function(q){
+        for(i in 1:length(q)){
+        file_name = paste0("problem_id_",i,".txt")
+        write.table(q[i], file = file_name, quote = FALSE, row.names = FALSE,
+                    col.names = FALSE)
+    }
+}
+
+generate_submission_files(prediction_model_rf_test)
+```
